@@ -1,0 +1,7 @@
+node_modules
+dist
+dist-*
+.expo
+.env
+apps/mobile/assets/Mia.vrm
+apps/mobile/public/Mia.vrm

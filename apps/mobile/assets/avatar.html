@@ -1,0 +1,341 @@
+<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no">
+<style>html,body{margin:0;height:100%;background:transparent;overflow:hidden}#cv{position:fixed;inset:0;width:100%;height:100%;display:block}</style></head>
+<body><canvas id="cv"></canvas><script>
+/* ---- 최소 수학 라이브러리 (외부 의존성 없음) ---- */
+const M4={
+ id(){return new Float32Array([1,0,0,0,0,1,0,0,0,0,1,0,0,0,0,1])},
+ mul(o,a,b){const r=new Float32Array(16);for(let c=0;c<4;c++)for(let rr=0;rr<4;rr++){r[c*4+rr]=a[rr]*b[c*4]+a[4+rr]*b[c*4+1]+a[8+rr]*b[c*4+2]+a[12+rr]*b[c*4+3]}if(o){o.set(r);return o}return r},
+ fromTRS(o,t,q,s){const[x,y,z,w]=q,x2=x+x,y2=y+y,z2=z+z,xx=x*x2,xy=x*y2,xz=x*z2,yy=y*y2,yz=y*z2,zz=z*z2,wx=w*x2,wy=w*y2,wz=w*z2;
+  o[0]=(1-(yy+zz))*s[0];o[1]=(xy+wz)*s[0];o[2]=(xz-wy)*s[0];o[3]=0;
+  o[4]=(xy-wz)*s[1];o[5]=(1-(xx+zz))*s[1];o[6]=(yz+wx)*s[1];o[7]=0;
+  o[8]=(xz+wy)*s[2];o[9]=(yz-wx)*s[2];o[10]=(1-(xx+yy))*s[2];o[11]=0;
+  o[12]=t[0];o[13]=t[1];o[14]=t[2];o[15]=1;return o},
+ persp(fovy,asp,n,f){const t=1/Math.tan(fovy/2),o=new Float32Array(16);o[0]=t/asp;o[5]=t;o[10]=(f+n)/(n-f);o[11]=-1;o[14]=2*f*n/(n-f);return o},
+ lookAt(e,c,u){let zx=e[0]-c[0],zy=e[1]-c[1],zz=e[2]-c[2],l=Math.hypot(zx,zy,zz);zx/=l;zy/=l;zz/=l;
+  let xx=u[1]*zz-u[2]*zy,xy=u[2]*zx-u[0]*zz,xz=u[0]*zy-u[1]*zx;l=Math.hypot(xx,xy,xz);xx/=l;xy/=l;xz/=l;
+  const yx=zy*xz-zz*xy,yy=zz*xx-zx*xz,yz=zx*xy-zy*xx;
+  return new Float32Array([xx,yx,zx,0,xy,yy,zy,0,xz,yz,zz,0,-(xx*e[0]+xy*e[1]+xz*e[2]),-(yx*e[0]+yy*e[1]+yz*e[2]),-(zx*e[0]+zy*e[1]+zz*e[2]),1])},
+ pos(m){return[m[12],m[13],m[14]]},
+ rotQ(m){/* 스케일 무시 회전 추출 */const sx=Math.hypot(m[0],m[1],m[2]),sy=Math.hypot(m[4],m[5],m[6]),sz=Math.hypot(m[8],m[9],m[10]);
+  const a=m[0]/sx,b=m[1]/sx,c=m[2]/sx,d=m[4]/sy,e=m[5]/sy,f=m[6]/sy,g=m[8]/sz,h=m[9]/sz,i=m[10]/sz;const tr=a+e+i;let q;
+  if(tr>0){const s=Math.sqrt(tr+1)*2;q=[(f-h)/s,(g-c)/s,(b-d)/s,.25*s]}
+  else if(a>e&&a>i){const s=Math.sqrt(1+a-e-i)*2;q=[.25*s,(d+b)/s,(g+c)/s,(f-h)/s]}
+  else if(e>i){const s=Math.sqrt(1+e-a-i)*2;q=[(d+b)/s,.25*s,(h+f)/s,(g-c)/s]}
+  else{const s=Math.sqrt(1+i-a-e)*2;q=[(g+c)/s,(h+f)/s,.25*s,(b-d)/s]}return q},
+ xf(m,p){return[m[0]*p[0]+m[4]*p[1]+m[8]*p[2]+m[12],m[1]*p[0]+m[5]*p[1]+m[9]*p[2]+m[13],m[2]*p[0]+m[6]*p[1]+m[10]*p[2]+m[14]]}
+};
+const Q={
+ mul(a,b){return[a[3]*b[0]+a[0]*b[3]+a[1]*b[2]-a[2]*b[1],a[3]*b[1]-a[0]*b[2]+a[1]*b[3]+a[2]*b[0],a[3]*b[2]+a[0]*b[1]-a[1]*b[0]+a[2]*b[3],a[3]*b[3]-a[0]*b[0]-a[1]*b[1]-a[2]*b[2]]},
+ inv(a){return[-a[0],-a[1],-a[2],a[3]]},
+ axis(ax,ang){const s=Math.sin(ang/2);return ax==='x'?[s,0,0,Math.cos(ang/2)]:ax==='y'?[0,s,0,Math.cos(ang/2)]:[0,0,s,Math.cos(ang/2)]},
+ euler(x,y,z){return Q.mul(Q.mul(Q.axis('y',y),Q.axis('x',x)),Q.axis('z',z))},
+ rot(q,v){const[x,y,z,w]=q,ix=w*v[0]+y*v[2]-z*v[1],iy=w*v[1]+z*v[0]-x*v[2],iz=w*v[2]+x*v[1]-y*v[0],iw=-x*v[0]-y*v[1]-z*v[2];
+  return[ix*w+iw*-x+iy*-z-iz*-y,iy*w+iw*-y+iz*-x-ix*-z,iz*w+iw*-z+ix*-y-iy*-x]},
+ norm(q){const l=Math.hypot(q[0],q[1],q[2],q[3])||1;return[q[0]/l,q[1]/l,q[2]/l,q[3]/l]},
+ slerp(a,b,t){let d=a[0]*b[0]+a[1]*b[1]+a[2]*b[2]+a[3]*b[3];if(d<0){b=[-b[0],-b[1],-b[2],-b[3]];d=-d}
+  if(d>.9995)return Q.norm([a[0]+(b[0]-a[0])*t,a[1]+(b[1]-a[1])*t,a[2]+(b[2]-a[2])*t,a[3]+(b[3]-a[3])*t]);
+  const th=Math.acos(d),s=Math.sin(th),w1=Math.sin((1-t)*th)/s,w2=Math.sin(t*th)/s;return[a[0]*w1+b[0]*w2,a[1]*w1+b[1]*w2,a[2]*w1+b[2]*w2,a[3]*w1+b[3]*w2]},
+ fromUnit(a,b){const d=a[0]*b[0]+a[1]*b[1]+a[2]*b[2];if(d<-.999999){return[0,0,1,0]}
+  return Q.norm([a[1]*b[2]-a[2]*b[1],a[2]*b[0]-a[0]*b[2],a[0]*b[1]-a[1]*b[0],1+d])}
+};
+const V3={sub:(a,b)=>[a[0]-b[0],a[1]-b[1],a[2]-b[2]],add:(a,b)=>[a[0]+b[0],a[1]+b[1],a[2]+b[2]],mul:(a,s)=>[a[0]*s,a[1]*s,a[2]*s],len:a=>Math.hypot(a[0],a[1],a[2]),
+ nrm(a){const l=Math.hypot(a[0],a[1],a[2])||1;return[a[0]/l,a[1]/l,a[2]/l]},dot:(a,b)=>a[0]*b[0]+a[1]*b[1]+a[2]*b[2]};
+
+/* ---- GLB/VRM 1.0 로더 + 스키닝 + 모프 + 스프링본 + MToon 근사 렌더러 ---- */
+async function loadVRM(gl,buf){
+ const dv=new DataView(buf);let off=12,J,BIN;
+ while(off<buf.byteLength){const l=dv.getUint32(off,true),t=dv.getUint32(off+4,true);
+  if(t===0x4E4F534A)J=JSON.parse(new TextDecoder().decode(new Uint8Array(buf,off+8,l)));else if(t===0x004E4942)BIN=new Uint8Array(buf,off+8,l);off+=8+l}
+ const ext=J.extensions,vrm=ext.VRMC_vrm,sbExt=ext.VRMC_springBone;
+ const CT={5120:Int8Array,5121:Uint8Array,5122:Int16Array,5123:Uint16Array,5125:Uint32Array,5126:Float32Array},NC={SCALAR:1,VEC2:2,VEC3:3,VEC4:4,MAT4:16};
+ function acc(i){const a=J.accessors[i],bv=J.bufferViews[a.bufferView],T=CT[a.componentType],n=NC[a.type],es=T.BYTES_PER_ELEMENT*n,stride=bv.byteStride||es;
+  const base=(bv.byteOffset||0)+(a.byteOffset||0);const out=new T(a.count*n);
+  if(stride===es){out.set(new T(BIN.buffer.slice(BIN.byteOffset+base,BIN.byteOffset+base+a.count*es)))}
+  else{const src=new DataView(BIN.buffer,BIN.byteOffset);for(let k=0;k<a.count;k++)for(let c=0;c<n;c++){const p=base+k*stride+c*T.BYTES_PER_ELEMENT;
+   out[k*n+c]=T===Float32Array?src.getFloat32(p,true):T===Uint16Array?src.getUint16(p,true):T===Uint32Array?src.getUint32(p,true):T===Uint8Array?src.getUint8(p):src.getInt16(p,true)}}
+  return{data:out,n,count:a.count,ct:a.componentType}}
+ /* 노드 */
+ const N=J.nodes,nn=N.length,parent=new Int32Array(nn).fill(-1);
+ N.forEach((n,i)=>(n.children||[]).forEach(c=>parent[c]=i));
+ const lt=N.map(n=>n.translation?n.translation.slice():[0,0,0]),lr=N.map(n=>n.rotation?n.rotation.slice():[0,0,0,1]),ls=N.map(n=>n.scale?n.scale.slice():[1,1,1]);
+ const restR=lr.map(q=>q.slice()),restT=lt.map(t=>t.slice());
+ const order=[];function visit(i){order.push(i);(N[i].children||[]).forEach(visit)}J.scenes[J.scene].nodes.forEach(visit);
+ const wm=N.map(()=>M4.id());
+ function updateWorld(){for(const i of order){M4.fromTRS(wm[i],lt[i],lr[i],ls[i]);if(parent[i]>=0)M4.mul(wm[i],wm[parent[i]],wm[i])}}
+ updateWorld();
+ const restW=wm.map(m=>M4.rotQ(m));
+ /* 휴머노이드 */
+ const hb={};for(const k in vrm.humanoid.humanBones)hb[k]=vrm.humanoid.humanBones[k].node;
+ const delta={};/* 정규화 공간의 회전(휴식 자세 기준) */
+ const nodeToBone={};for(const k in hb)nodeToBone[hb[k]]=k;
+ function applyPose(){for(const k in hb){const n=hb[k],d=delta[k]||[0,0,0,1],p=parent[n];const pr=p>=0?restW[p]:[0,0,0,1];
+   lr[n]=Q.mul(Q.mul(Q.mul(Q.inv(pr),d),pr),restR[n])}}
+ /* 텍스처 */
+ const tex=[];const imgs=J.images;
+ const bmps=await Promise.all(imgs.map(async im=>{const bv=J.bufferViews[im.bufferView];const blob=new Blob([BIN.slice(bv.byteOffset||0,(bv.byteOffset||0)+bv.byteLength)],{type:im.mimeType});return createImageBitmap(blob,{premultiplyAlpha:'none',colorSpaceConversion:'none'})}));
+ const glTex=bmps.map(b=>{const t=gl.createTexture();gl.bindTexture(gl.TEXTURE_2D,t);gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL,false);gl.pixelStorei(gl.UNPACK_PREMULTIPLY_ALPHA_WEBGL,false);
+  gl.texImage2D(gl.TEXTURE_2D,0,gl.RGBA,gl.RGBA,gl.UNSIGNED_BYTE,b);gl.generateMipmap(gl.TEXTURE_2D);
+  gl.texParameteri(gl.TEXTURE_2D,gl.TEXTURE_MIN_FILTER,gl.LINEAR_MIPMAP_LINEAR);gl.texParameteri(gl.TEXTURE_2D,gl.TEXTURE_MAG_FILTER,gl.LINEAR);
+  gl.texParameteri(gl.TEXTURE_2D,gl.TEXTURE_WRAP_S,gl.REPEAT);gl.texParameteri(gl.TEXTURE_2D,gl.TEXTURE_WRAP_T,gl.REPEAT);b.close&&b.close();return t});
+ const texOf=ti=>ti==null?null:glTex[J.textures[ti.index].source];
+ const white=(()=>{const t=gl.createTexture();gl.bindTexture(gl.TEXTURE_2D,t);gl.texImage2D(gl.TEXTURE_2D,0,gl.RGBA,1,1,0,gl.RGBA,gl.UNSIGNED_BYTE,new Uint8Array([255,255,255,255]));gl.texParameteri(gl.TEXTURE_2D,gl.TEXTURE_MIN_FILTER,gl.NEAREST);return t})();
+ const black=(()=>{const t=gl.createTexture();gl.bindTexture(gl.TEXTURE_2D,t);gl.texImage2D(gl.TEXTURE_2D,0,gl.RGBA,1,1,0,gl.RGBA,gl.UNSIGNED_BYTE,new Uint8Array([0,0,0,255]));gl.texParameteri(gl.TEXTURE_2D,gl.TEXTURE_MIN_FILTER,gl.NEAREST);return t})();
+ /* 머티리얼 */
+ const mats=J.materials.map(m=>{const mt=(m.extensions||{}).VRMC_materials_mtoon||{},pbr=m.pbrMetallicRoughness||{};
+  return{name:m.name,mode:m.alphaMode||'OPAQUE',cut:m.alphaCutoff??.5,dbl:!!m.doubleSided,base:pbr.baseColorFactor||[1,1,1,1],baseTex:texOf(pbr.baseColorTexture),
+   shade:mt.shadeColorFactor||[1,1,1],shadeTex:texOf(mt.shadeMultiplyTexture)||texOf(pbr.baseColorTexture),shift:mt.shadingShiftFactor??0,toony:mt.shadingToonyFactor??.9,
+   emi:m.emissiveFactor||[0,0,0],emiTex:texOf(m.emissiveTexture),rq:mt.renderQueueOffsetNumber||0,zw:!!mt.transparentWithZWrite,
+   outW:mt.outlineWidthMode==='worldCoordinates'?(mt.outlineWidthFactor||0):0,outC:mt.outlineColorFactor||[0,0,0],outTex:texOf(mt.outlineWidthMultiplyTexture)}});
+ /* 메시/프리미티브 */
+ const prims=[];
+ N.forEach((n,ni)=>{if(n.mesh==null)return;const mesh=J.meshes[n.mesh];
+  mesh.primitives.forEach((p,pi)=>{const A=p.attributes,pos=acc(A.POSITION),nor=acc(A.NORMAL),uv=acc(A.TEXCOORD_0),jn=acc(A.JOINTS_0),wt=acc(A.WEIGHTS_0),idx=acc(p.indices);
+   const pr={node:ni,skin:n.skin,mat:mats[p.material],pos:pos.data,basePos:pos.data.slice(),count:pos.count,idx:idx.data,idxCt:idx.ct,idxN:idx.count,targets:null};
+   if(p.targets)pr.targets=p.targets.map(t=>acc(t.POSITION).data);
+   const vao=gl.createVertexArray();gl.bindVertexArray(vao);
+   const mk=(data,loc,size,type,isInt)=>{const b=gl.createBuffer();gl.bindBuffer(gl.ARRAY_BUFFER,b);gl.bufferData(gl.ARRAY_BUFFER,data,gl.STATIC_DRAW);gl.enableVertexAttribArray(loc);
+    isInt?gl.vertexAttribIPointer(loc,size,type,0,0):gl.vertexAttribPointer(loc,size,type,false,0,0);return b};
+   pr.posBuf=mk(pos.data,0,3,gl.FLOAT);pr.norBuf=mk(nor.data,1,3,gl.FLOAT);mk(uv.data,2,2,gl.FLOAT);
+   mk(jn.ct===5121?jn.data:new Uint16Array(jn.data),3,4,jn.ct===5121?gl.UNSIGNED_BYTE:gl.UNSIGNED_SHORT,true);mk(wt.data,4,4,gl.FLOAT);
+   const ib=gl.createBuffer();gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER,ib);gl.bufferData(gl.ELEMENT_ARRAY_BUFFER,idx.data,gl.STATIC_DRAW);
+   pr.vao=vao;pr.order=prims.length;prims.push(pr)})});
+ gl.bindVertexArray(null);
+ /* 스킨 */
+ const skins=J.skins.map(s=>{const ibm=acc(s.inverseBindMatrices).data,jt=gl.createTexture();gl.bindTexture(gl.TEXTURE_2D,jt);
+  gl.texImage2D(gl.TEXTURE_2D,0,gl.RGBA32F,4,s.joints.length,0,gl.RGBA,gl.FLOAT,null);gl.texParameteri(gl.TEXTURE_2D,gl.TEXTURE_MIN_FILTER,gl.NEAREST);gl.texParameteri(gl.TEXTURE_2D,gl.TEXTURE_MAG_FILTER,gl.NEAREST);
+  return{joints:s.joints,ibm,tex:jt,buf:new Float32Array(s.joints.length*16)}});
+ /* 표정 */
+ const expr={};for(const k in vrm.expressions.preset)expr[k]={binds:vrm.expressions.preset[k].morphTargetBinds||[],w:0,tw:0};
+ const exprNodes={};
+ let morphDirty=true;
+ function applyMorph(){if(!morphDirty)return;morphDirty=false;
+  for(const pr of prims){if(!pr.targets)continue;const w=new Float32Array(pr.targets.length);let any=false;
+   for(const k in expr){const e=expr[k];if(e.w<.001)continue;for(const b of e.binds){if(b.node===pr.node){w[b.index]+=b.weight*e.w;any=true}}}
+   pr.pos.set(pr.basePos);if(any)for(let t=0;t<w.length;t++){if(w[t]<.001)continue;const tg=pr.targets[t],ww=w[t];for(let i=0;i<pr.pos.length;i++)pr.pos[i]+=tg[i]*ww}
+   gl.bindBuffer(gl.ARRAY_BUFFER,pr.posBuf);gl.bufferSubData(gl.ARRAY_BUFFER,0,pr.pos)}}
+ /* 눈 키우기: 눈 관련 프리미티브(흰자·눈동자·하이라이트·아이라인·속눈썹)를 눈 중심 기준으로 XY 확대. 모프 변화량도 같은 비율로 키워 깜빡임이 어긋나지 않게 한다. */
+ function scaleEyes(sc){
+  const ey=prims.filter(p=>/Eye(White|Iris|Highlight|line|lash)/i.test(p.mat.name||''));const wh=ey.find(p=>/EyeWhite/i.test(p.mat.name||''));if(!wh)return;
+  if(!scaleEyes.done){scaleEyes.done=ey.map(p=>({p,base:p.basePos.slice(),tg:(p.targets||[]).map(t=>t.slice())}))}
+  const cs=[0,0,0,0,0,0];{const b=scaleEyes.done.find(o=>o.p===wh).base;let n=[0,0];for(let i=0;i<wh.count;i++){const k=b[3*i]>0?0:1;cs[k*3]+=b[3*i];cs[k*3+1]+=b[3*i+1];cs[k*3+2]+=b[3*i+2];n[k]++}for(let k=0;k<2;k++)for(let j=0;j<3;j++)cs[k*3+j]/=Math.max(1,n[k])}
+  for(const o of scaleEyes.done){const p=o.p;for(let i=0;i<p.count;i++){const k=o.base[3*i]>0?0:1,cx=cs[k*3],cy=cs[k*3+1];
+    p.basePos[3*i]=cx+sc*(o.base[3*i]-cx);p.basePos[3*i+1]=cy+sc*(o.base[3*i+1]-cy)}
+   (p.targets||[]).forEach((t,ti)=>{const b=o.tg[ti];for(let i=0;i<p.count;i++){t[3*i]=b[3*i]*sc;t[3*i+1]=b[3*i+1]*sc}})}
+  morphDirty=true}
+ function setExpr(name,v){const e=expr[name];if(e&&Math.abs(e.w-v)>.002){e.w=v;morphDirty=true}}
+ /* 스프링본 */
+ const colG=(sbExt.colliderGroups||[]).map(g=>g.colliders.map(ci=>sbExt.colliders[ci]));
+ const springs=(sbExt.springs||[]).map(sp=>{const js=sp.joints.map(j=>({node:j.node,hit:j.hitRadius||0,stiff:j.stiffness??1,gp:j.gravityPower||0,gd:j.gravityDir||[0,-1,0],drag:j.dragForce??.4}));
+  const cols=[].concat(...(sp.colliderGroups||[]).map(gi=>colG[gi]));
+  const chain=[];for(let i=0;i<js.length;i++){const nd=js[i].node;const child=js[i+1]?js[i+1].node:((N[nd].children||[])[0]);
+   if(child==null)continue;const ct=lt[child],len=Math.hypot(ct[0],ct[1],ct[2])||.05;
+   chain.push({...js[i],child,axis:V3.nrm(ct),len,lr0:restR[nd].slice(),cur:null,prev:null})}
+  return{chain,cols}});
+ let springInit=false;
+ function colWorld(c){const m=wm[c.node],sh=c.shape;if(sh.sphere){return{t:'s',a:M4.xf(m,sh.sphere.offset),r:sh.sphere.radius}}
+  if(sh.capsule){return{t:'c',a:M4.xf(m,sh.capsule.offset),b:M4.xf(m,sh.capsule.tail),r:sh.capsule.radius}}return null}
+ let sacc=0;function stepSprings(dt){sacc+=dt;if(sacc>.2)sacc=.05;let n=0;while(sacc>=1/60&&n<3){stepOnce(1/60);sacc-=1/60;n++}}
+ function stepOnce(dt){if(!springInit){for(const s of springs)for(const j of s.chain){const p=M4.pos(wm[j.child]);j.cur=p.slice();j.prev=p.slice()}springInit=true}
+  dt=Math.min(dt,1/30);
+  for(const s of springs){const cols=s.cols.map(colWorld).filter(Boolean);
+   for(const j of s.chain){const nd=j.node,pa=parent[nd];const pw=pa>=0?M4.rotQ(wm[pa]):[0,0,0,1];const headP=M4.pos(wm[nd]);
+    const baseQ=Q.mul(pw,j.lr0);const axisW=Q.rot(baseQ,j.axis);
+    let nt=V3.add(j.cur,V3.add(V3.mul(V3.sub(j.cur,j.prev),1-j.drag),V3.add(V3.mul(axisW,j.stiff*dt),V3.mul(V3.nrm(j.gd),j.gp*dt))));
+    let d=V3.sub(nt,headP);nt=V3.add(headP,V3.mul(V3.nrm(d),j.len));
+    for(const c of cols){const rad=c.r+j.hit;let q=c.a;if(c.t==='c'){const ab=V3.sub(c.b,c.a),t=Math.max(0,Math.min(1,V3.dot(V3.sub(nt,c.a),ab)/(V3.dot(ab,ab)||1)));q=V3.add(c.a,V3.mul(ab,t))}
+     const dd=V3.sub(nt,q),dl=V3.len(dd);if(dl<rad){nt=V3.add(q,V3.mul(V3.nrm(dd),rad));d=V3.sub(nt,headP);nt=V3.add(headP,V3.mul(V3.nrm(d),j.len))}}
+    j.prev=j.cur;j.cur=nt;
+    const dl=Q.rot(Q.inv(baseQ),V3.nrm(V3.sub(nt,headP)));lr[nd]=Q.mul(j.lr0,Q.fromUnit(j.axis,dl));
+    M4.fromTRS(wm[nd],lt[nd],lr[nd],ls[nd]);if(pa>=0)M4.mul(wm[nd],wm[pa],wm[nd]);
+    /* 자식 월드 갱신 */(function upd(i){for(const c of (N[i].children||[])){M4.fromTRS(wm[c],lt[c],lr[c],ls[c]);M4.mul(wm[c],wm[i],wm[c]);upd(c)}})(nd)}}}
+ /* 셰이더 */
+ const VS=`#version 300 es
+ layout(location=0)in vec3 aP;layout(location=1)in vec3 aN;layout(location=2)in vec2 aUv;layout(location=3)in uvec4 aJ;layout(location=4)in vec4 aW;
+ uniform sampler2D uJ;uniform mat4 uVP;uniform float uOut;
+ out vec3 vN;out vec2 vUv;
+ mat4 jm(uint i){int r=int(i);return mat4(texelFetch(uJ,ivec2(0,r),0),texelFetch(uJ,ivec2(1,r),0),texelFetch(uJ,ivec2(2,r),0),texelFetch(uJ,ivec2(3,r),0));}
+ void main(){mat4 s=aW.x*jm(aJ.x)+aW.y*jm(aJ.y)+aW.z*jm(aJ.z)+aW.w*jm(aJ.w);
+  vec3 n=normalize(mat3(s)*aN);vec4 p=s*vec4(aP,1.);p.xyz+=n*uOut;vN=n;vUv=aUv;gl_Position=uVP*p;}`;
+ const FS=`#version 300 es
+ precision highp float;in vec3 vN;in vec2 vUv;out vec4 o;
+ uniform sampler2D uB,uS,uE;uniform vec4 uBase;uniform vec3 uShade,uEmi,uOutC;uniform float uCut,uShift,uToony;uniform int uMode,uPass;uniform vec3 uL;
+ void main(){vec4 t=texture(uB,vUv)*uBase;if(uMode==1&&t.a<uCut)discard;
+  if(uPass==1){o=vec4(uOutC,1.);return;}
+  vec3 n=normalize(vN);if(!gl_FrontFacing)n=-n;
+  float nl=dot(n,uL);float lo=-1.+uToony,hi=1.-uToony;float s=clamp((nl+uShift-lo)/max(hi-lo,1e-4),0.,1.);
+  vec3 lit=t.rgb,sh=uShade*texture(uS,vUv).rgb;vec3 c=mix(sh,lit,s)+uEmi*texture(uE,vUv).rgb;
+  o=vec4(c,uMode==2?t.a:1.);}`;
+ const cs=(t,s)=>{const x=gl.createShader(t);gl.shaderSource(x,s);gl.compileShader(x);if(!gl.getShaderParameter(x,gl.COMPILE_STATUS))throw new Error(gl.getShaderInfoLog(x));return x};
+ const prog=gl.createProgram();gl.attachShader(prog,cs(gl.VERTEX_SHADER,VS));gl.attachShader(prog,cs(gl.FRAGMENT_SHADER,FS));gl.linkProgram(prog);if(!gl.getProgramParameter(prog,gl.LINK_STATUS))throw new Error(gl.getProgramInfoLog(prog));
+ const U={};['uJ','uVP','uOut','uB','uS','uE','uBase','uShade','uEmi','uOutC','uCut','uShift','uToony','uMode','uPass','uL'].forEach(n=>U[n]=gl.getUniformLocation(prog,n));
+ const mode=m=>m.mode==='MASK'?1:m.mode==='BLEND'?2:0;
+ const opaque=prims.filter(p=>p.mat.mode!=='BLEND'),blend=prims.filter(p=>p.mat.mode==='BLEND').sort((a,b)=>a.mat.rq-b.mat.rq||a.order-b.order);
+ function drawPrim(pr,pass){const m=pr.mat,sk=skins[pr.skin];gl.bindVertexArray(pr.vao);
+  gl.uniform4fv(U.uBase,m.base);gl.uniform3fv(U.uShade,m.shade);gl.uniform3fv(U.uEmi,m.emi);gl.uniform3fv(U.uOutC,m.outC);gl.uniform1f(U.uCut,m.cut);gl.uniform1f(U.uShift,m.shift);gl.uniform1f(U.uToony,m.toony);
+  gl.uniform1i(U.uMode,mode(m));gl.uniform1i(U.uPass,pass);gl.uniform1f(U.uOut,pass?m.outW:0);
+  gl.activeTexture(gl.TEXTURE0);gl.bindTexture(gl.TEXTURE_2D,m.baseTex||white);gl.activeTexture(gl.TEXTURE1);gl.bindTexture(gl.TEXTURE_2D,m.shadeTex||white);gl.activeTexture(gl.TEXTURE2);gl.bindTexture(gl.TEXTURE_2D,m.emiTex||black);
+  gl.activeTexture(gl.TEXTURE3);gl.bindTexture(gl.TEXTURE_2D,sk.tex);
+  gl.drawElements(gl.TRIANGLES,pr.idxN,pr.idxCt===5125?gl.UNSIGNED_INT:gl.UNSIGNED_SHORT,0)}
+ function render(VP){
+  updateWorld();/* 포즈 적용 후 호출 */
+  gl.useProgram(prog);gl.uniformMatrix4fv(U.uVP,false,VP);gl.uniform1i(U.uB,0);gl.uniform1i(U.uS,1);gl.uniform1i(U.uE,2);gl.uniform1i(U.uJ,3);gl.uniform3fv(U.uL,V3.nrm([.35,.55,.75]));
+  skins.forEach((sk,si)=>{for(let k=0;k<sk.joints.length;k++){const m=M4.mul(null,wm[sk.joints[k]],sk.ibm.subarray(k*16,k*16+16));sk.buf.set(m,k*16)}
+   gl.activeTexture(gl.TEXTURE3);gl.bindTexture(gl.TEXTURE_2D,sk.tex);gl.texSubImage2D(gl.TEXTURE_2D,0,0,0,4,sk.joints.length,gl.RGBA,gl.FLOAT,sk.buf)});
+  applyMorph();
+  gl.enable(gl.DEPTH_TEST);gl.depthFunc(gl.LEQUAL);
+  /* 외곽선(뒷면만) */
+  gl.enable(gl.CULL_FACE);gl.cullFace(gl.FRONT);gl.disable(gl.BLEND);gl.depthMask(true);
+  for(const p of opaque)if(p.mat.outW>0)drawPrim(p,1);
+  gl.disable(gl.CULL_FACE);
+  for(const p of opaque){if(!p.mat.dbl){gl.enable(gl.CULL_FACE);gl.cullFace(gl.BACK)}else gl.disable(gl.CULL_FACE);drawPrim(p,0)}
+  gl.enable(gl.BLEND);gl.blendFunc(gl.SRC_ALPHA,gl.ONE_MINUS_SRC_ALPHA);
+  for(const p of blend){gl.depthMask(p.mat.zw);if(!p.mat.dbl){gl.enable(gl.CULL_FACE);gl.cullFace(gl.BACK)}else gl.disable(gl.CULL_FACE);drawPrim(p,0)}
+  gl.depthMask(true);gl.disable(gl.BLEND);gl.disable(gl.CULL_FACE);gl.bindVertexArray(null)}
+ return{J,hb,delta,applyPose,updateWorld,stepSprings,render,setExpr,scaleEyes,expr,lt,lr,wm,parent,restR,restW,nodeToBone,N,
+  boneWorldPos(b){return M4.pos(wm[hb[b]])}}}
+
+/* ---- 아바타 컨트롤러: 자연스러운 상시 모션 + 제스처 + 립싱크 ---- */
+const D2R=Math.PI/180;
+class Avatar{
+ constructor(m){this.m=m;this.t=0;this.speaking=false;this.env=0;this.listening=false;this.lis=0;this.pulse=0;
+  this.blink=0;this.nextBlink=2;this.bs=-1;this.gx=0;this.gy=0;this.tgx=0;this.tgy=0;this.nextSac=1.2;
+  this.vow={aa:0,ih:0,ou:0,ee:0,oh:0};this.cur='aa';this.ph=0;this.lastS=1;this.mood={happy:.18,relaxed:0,surprised:0,sad:0,angry:0};this.tmood={happy:.18,relaxed:0,surprised:0,sad:0,angry:0};this.post={hx:0,hz:0,sp:0,sh:0,bounce:0,laugh:0};this.tpost={hx:0,hz:0,sp:0,sh:0,bounce:0,laugh:0};this.em=null;this.gz=null;
+  this.g=null;this.nod=null;this.beat=null;this.nextBeat=3;this.smQ={};this.sway=0}
+ speak(on){this.speaking=on;if(on)this.pulse=1}
+ listen(on){this.listening=on}
+ setMood(o){this.tmood=Object.assign({happy:0,relaxed:0,surprised:0,sad:0,angry:0},o)}
+ /* 감정 연기: 표정 + 몸짓(고개 기울임·숙임·들썩임) + 시선. dur초 뒤 평상시로 천천히 돌아온다. */
+ emote(name,dur=3.2){const E={
+   neutral:[{happy:.18},{}],
+   joy:[{happy:.6},{hz:3,hx:-1,sp:-.8}],
+   delight:[{happy:.95},{hz:5,hx:-2,sp:-1.4,bounce:1.2,laugh:.2}],
+   laugh:[{happy:1},{hz:4,hx:-3,sp:-1,laugh:1}],
+   sorry:[{sad:.5,relaxed:.1},{hx:8,sp:3,hz:-3}],
+   worried:[{sad:.55,surprised:.12},{hx:3,hz:-6,sp:1}],
+   surprise:[{surprised:1},{hx:-6,sp:-2.5}],
+   panic:[{surprised:.8,sad:.45},{hx:-3,hz:4,sp:-1}],
+   confused:[{surprised:.28,sad:.3},{hz:7,hx:-1}],
+   thinking:[{relaxed:.25,happy:.05},{hz:-5,hx:-2}],
+   cheeky:[{happy:.75,angry:.14},{hz:6,hx:1.5}],
+   shy:[{relaxed:.45,happy:.4},{hx:4,hz:5}],
+   proud:[{happy:.75},{hx:-4,sp:-2}],
+   pout:[{angry:.35,sad:.2},{hx:3,hz:-3}]}[name]||[{happy:.18},{}];
+  this.setMood(E[0]);this.tpost=Object.assign({hx:0,hz:0,sp:0,sh:0,bounce:0,laugh:0},E[1]);
+  if(name==='thinking')this.gz={x:-7,y:-4};else if(name==='confused')this.gz={x:6,y:-3};else if(name==='shy'||name==='sorry')this.gz={x:5,y:5};else this.gz=null;
+  this.em={name,t0:this.t,dur}}
+ doNod(n=2){this.nod={t0:this.t,n}}
+ doShake(){this.nod={t0:this.t,n:2,shake:true}}
+ gesture(name,dur){this.g={name,t0:this.t,dur:dur||2.4}}
+ env_(g){if(!g)return 0;const s=this.t-g.t0;if(s<0||s>g.dur)return 0;return Math.min(1,s/.4)*Math.min(1,(g.dur-s)/.5)}
+ update(dt){
+  dt=Math.min(dt,.05);this.t+=dt;const t=this.t,m=this.m,d=m.delta;
+  const sm=(c,tg,k)=>c+(tg-c)*(1-Math.exp(-k*dt));
+  this.env=sm(this.env,this.speaking?1:0,this.speaking?8:5);this.lis=sm(this.lis,this.listening?1:0,3);
+  this.pulse*=Math.exp(-5*dt);this.pulseS=(this.pulseS||0)+(this.pulse-(this.pulseS||0))*(1-Math.exp(-9*dt));const e=this.env,l=this.lis,pu=this.pulseS;
+  if(this.em&&t-this.em.t0>this.em.dur){this.em=null;this.gz=null;this.setMood({happy:.18});this.tpost={hx:0,hz:0,sp:0,sh:0,bounce:0,laugh:0}}
+  for(const k in this.post)this.post[k]+=(this.tpost[k]-this.post[k])*(1-Math.exp(-5*dt));
+  const P=this.post,lg=P.laugh*Math.sin(t*21);
+  const br=Math.sin(t*1.5);/* 호흡 */
+  /* ---- 몸통 ---- */
+  d.hips=Q.euler(0,.7*D2R*Math.sin(t*.37),.5*D2R*Math.sin(t*.5));
+  d.spine=Q.euler((.8*br-.4*e+P.sp+P.bounce*Math.sin(t*9)*.8)*D2R,-.4*D2R*Math.sin(t*.37),0);
+  d.chest=Q.euler((1.2*br+lg*1.1)*D2R,.3*D2R*Math.sin(t*.45),0);
+  d.upperChest=Q.euler(.8*br*D2R,0,0);
+  /* ---- 머리 ---- */
+  let hx=2*Math.sin(t*.42)+1*Math.sin(t*1.1+1)+e*(1.2*Math.sin(t*1.7)-.7*pu)+l*3;
+  let hy=3.5*Math.sin(t*.31)+1.5*Math.sin(t*.83+2)+e*2*Math.sin(t*1.3);
+  let hz=1.4*Math.sin(t*.27)+l*4+e*1.2*Math.sin(t*.9);
+  if(this.nod){const s=t-this.nod.t0,T=.55*this.nod.n;if(s>T)this.nod=null;else{const w=Math.sin(s/T*Math.PI*this.nod.n)*Math.sin(s/T*Math.PI);if(this.nod.shake)hy+=9*w;else hx+=11*w}}
+  if(l>.5&&Math.sin(t*.9)>.96)hx+=3;
+  hx+=P.hx;hz+=P.hz;d.neck=Q.euler(hx*.4*D2R,hy*.4*D2R,hz*.4*D2R);d.head=Q.euler(hx*.6*D2R,hy*.6*D2R,hz*.6*D2R);
+  /* ---- 시선(카메라 향함 + 미세 도약) ---- */
+  this.nextSac-=dt;if(this.nextSac<0){this.nextSac=1.3+Math.random()*2.8;const c=Math.random()<.6;this.tgx=c?0:(Math.random()*2-1)*4;this.tgy=c?0:(Math.random()*2-1)*2.5}
+  const gtx=this.gz?this.gz.x:this.tgx,gty=this.gz?this.gz.y:this.tgy;this.gx=sm(this.gx,gtx-hy*.3,16);this.gy=sm(this.gy,gty-hx*.3,16);
+  d.leftEye=d.rightEye=Q.euler(this.gy*D2R,this.gx*D2R,0);
+  /* ---- 눈 깜빡임 ---- */
+  this.nextBlink-=dt;if(this.bs<0&&this.nextBlink<0){this.bs=0;this.dbl=Math.random()<.2}
+  if(this.bs>=0){this.bs+=dt;const T=.2,x=this.bs/T;this.blink=x<.4?Math.sin(x/.4*Math.PI/2):x<1?Math.cos((x-.4)/.6*Math.PI/2):0;if(this.bs>=T){this.bs=-1;this.blink=0;this.nextBlink=this.dbl?.1:2.3+Math.random()*3.8}}
+  /* ---- 팔(기본 자세) ---- */
+  const idle={};const sway=Math.sin(t*.9);
+  const arm=(s)=>{/* s=+1 왼쪽, -1 오른쪽 */const side=s>0?'left':'right';
+   idle[side+'UpperArm']=Q.euler(0,s*-6*D2R,-s*(76+1.2*Math.sin(t*.8+s))*D2R);
+   idle[side+'LowerArm']=Q.euler(0,s*-20*D2R+0,s*0);
+   idle[side+'Hand']=Q.euler(0,0,-s*6*D2R);
+   idle[side+'Shoulder']=Q.euler(0,0,s*(-1.2*br)*D2R)};
+  arm(1);arm(-1);
+  const fing=(side,s,curl,thumb)=>{for(const f of ['Index','Middle','Ring','Little']){const k=curl*(f==='Index'?.9:f==='Middle'?1:f==='Ring'?1.05:1.1);
+    for(const j of['Proximal','Intermediate','Distal'])idle[side+f+j]=Q.axis('z',-s*k*(j==='Proximal'?.7:j==='Intermediate'?1:.6))}
+   idle[side+'ThumbMetacarpal']=Q.euler(0,0,-s*thumb*.3);idle[side+'ThumbProximal']=Q.euler(0,0,-s*thumb*.5);idle[side+'ThumbDistal']=Q.euler(0,0,-s*thumb*.4)};
+  fing('left',1,.35+.05*Math.sin(t*.7),.35);fing('right',-1,.35+.05*Math.sin(t*.7+1),.35);
+  /* ---- 제스처 ---- */
+  const pose={...idle};const ge=this.env_(this.g);
+  if(ge>0){const s=t-this.g.t0,n=this.g.name;
+   if(n==='wave'){const o=Math.sin(s*6.28*2.4);
+    pose.leftUpperArm=Q.euler(0,-38*D2R,-(-12)*D2R*0+(-28*D2R)*-1*0-(-20)*D2R*0);
+    pose.leftUpperArm=Q.mul(Q.axis('y',-35*D2R),Q.axis('z',-22*D2R));
+    pose.leftLowerArm=Q.mul(Q.axis('z',(100+10*o)*D2R),Q.axis('x',-70*D2R));
+    pose.leftHand=Q.axis('z',(8*o)*D2R);fing('left',1,.04,0);for(const k in idle)if(/^left(Index|Middle|Ring|Little|Thumb)/.test(k))pose[k]=idle[k]}
+   if(n==='thumbs'){
+    pose.leftUpperArm=Q.mul(Q.axis('y',-18*D2R),Q.axis('z',-34*D2R));
+    pose.leftLowerArm=Q.mul(Q.axis('y',-68*D2R),Q.axis('x',-95*D2R));
+    for(const f of['Index','Middle','Ring','Little'])for(const j of['Proximal','Intermediate','Distal'])pose['left'+f+j]=Q.axis('z',-(1.3)*(j==='Proximal'?.8:1));
+    pose.leftThumbMetacarpal=Q.axis('z',.15);pose.leftThumbProximal=Q.axis('z',0);pose.leftThumbDistal=Q.axis('z',0);pose.leftHand=Q.axis('x',20*D2R)}
+   if(n==='shrug'){pose.leftUpperArm=Q.mul(Q.axis('y',-14*D2R),Q.axis('z',-52*D2R));pose.rightUpperArm=Q.mul(Q.axis('y',14*D2R),Q.axis('z',52*D2R));pose.leftLowerArm=Q.mul(Q.axis('y',-70*D2R),Q.axis('x',-30*D2R));pose.rightLowerArm=Q.mul(Q.axis('y',70*D2R),Q.axis('x',30*D2R))}
+  }
+  /* 말할 때 자연스러운 손짓(비트 제스처) */
+  if(e>.5&&ge<=0){this.nextBeat-=dt;if(!this.beat&&this.nextBeat<0){this.beat={t0:t,s:Math.random()<.5?1:-1,a:.6+Math.random()*.4};this.nextBeat=1.6+Math.random()*2.4}}
+  if(this.beat){const s=t-this.beat.t0,T=.9;if(s>T)this.beat=null;else{const w=Math.sin(s/T*Math.PI),side=this.beat.s>0?'left':'right',k=this.beat.s,a=this.beat.a*w*e;
+    pose[side+'UpperArm']=Q.mul(Q.axis('y',k*-26*D2R*a),Q.axis('z',-k*(76-26*a)*D2R));
+    pose[side+'LowerArm']=Q.mul(Q.axis('y',k*-(20+55*a)*D2R),Q.axis('z',k*10*a*D2R*Math.sin(s*5)));
+    pose[side+'Hand']=Q.axis('z',-k*(6-10*a)*D2R)}}
+  /* 팔 포즈 부드럽게 보간(급변 방지) */
+  for(const k in pose){const prev=this.smQ[k]||pose[k];this.smQ[k]=Q.slerp(prev,pose[k],1-Math.exp(-10*dt));d[k]=this.smQ[k]}
+  /* ---- 표정 ---- */
+  for(const k in this.mood)this.mood[k]=sm(this.mood[k],this.tmood[k]||0,7);
+  const mv=this.mood;const idl=.05*Math.sin(t*.55)+.04*Math.sin(t*1.3+1);m.setExpr('happy',Math.max(0,Math.min(1,(mv.happy+.1*e+idl)*.85)));m.setExpr('relaxed',mv.relaxed*.8);m.setExpr('surprised',Math.min(1,mv.surprised+.07*pu));m.setExpr('sad',mv.sad);m.setExpr('angry',mv.angry);
+  m.setExpr('blink',Math.min(1,this.blink));
+  /* ---- 립싱크: 음절 리듬 + 모음 전환 ---- */
+  const VOW=['aa','oh','ee','ih','ou','aa','oh'];
+  this.ph+=dt*(3.6+.8*Math.sin(t*.7));const sn=Math.sin(this.ph*Math.PI*2);
+  if(sn>0&&this.lastS<=0){this.cur=VOW[(Math.random()*VOW.length)|0]}this.lastS=sn;
+  const amp=e*((sn*.5+.5)**1.2*.55+.12*pu+.08)*(.8+.2*Math.sin(t*2.1));
+  const lm=P.laugh>.05?P.laugh*(.35+.3*Math.sin(t*21)):0;for(const v in this.vow){const tg=(v===this.cur?amp:0)+(v==='aa'?lm:0);this.vow[v]=sm(this.vow[v],tg,v===this.cur?16:12);m.setExpr(v,Math.min(1,this.vow[v]))}
+ }
+}
+
+/* WebView 안에서 Mia(3D)만 그리는 부트 코드. React Native와는 postMessage(JSON)로만 통신한다. */
+const cv=document.getElementById('cv');let gl=null,model=null,av=null,speaking=false,pulseIv=null;
+const AP={ey:1.38,ez:1.6,cy:1.34,fov:28};   // 대화 중 줌업(상반신) 카메라
+const send=o=>{try{window.ReactNativeWebView?window.ReactNativeWebView.postMessage(JSON.stringify(o)):parent!==window&&parent.postMessage(o,'*')}catch(e){}};
+function fit(){const dpr=Math.min(devicePixelRatio||1,2),r=cv.getBoundingClientRect();cv.width=Math.round(r.width*dpr);cv.height=Math.round(r.height*dpr)}
+async function start(buf){
+  gl=cv.getContext('webgl2',{alpha:true,antialias:true,premultipliedAlpha:false});if(!gl)throw new Error('WebGL2 미지원');
+  fit();addEventListener('resize',fit);
+  model=await loadVRM(gl,buf);av=new Avatar(model);window.av=av;model.scaleEyes(window.EYE_SCALE||1);
+  let last=performance.now();
+  (function loop(now){const dt=Math.min((now-last)/1000,.1);last=now;av.update(dt);model.applyPose();model.updateWorld();model.stepSprings(dt);
+    gl.viewport(0,0,cv.width,cv.height);gl.clearColor(0,0,0,0);gl.clearDepth(1);gl.clear(gl.COLOR_BUFFER_BIT|gl.DEPTH_BUFFER_BIT);
+    const t=av.t,asp=cv.width/cv.height;const V=M4.lookAt([.03*Math.sin(t*.4),AP.ey+.01*Math.sin(t*.3),AP.ez],[0,AP.cy,0],[0,1,0]);
+    model.render(M4.mul(null,M4.persp(AP.fov*D2R,asp,.05,20),V));requestAnimationFrame(loop)})(last);
+  send({type:'ready'});
+}
+window.loadMia=async b64=>{try{const bin=atob(b64),u=new Uint8Array(bin.length);for(let i=0;i<bin.length;i++)u[i]=bin.charCodeAt(i);await start(u.buffer)}catch(e){send({type:'error',message:String(e)})}};
+/* 모델 로딩: 앱이 window.__VRM_URL__(로컬 파일 경로)을 미리 넣어 주거나, 개발 중에는 ?vrm=Mia.vrm */
+const q=window.__VRM_URL__||new URLSearchParams(location.search).get('vrm');if(q)fetch(q).then(r=>r.arrayBuffer()).then(start).catch(e=>send({type:'error',message:String(e)}));
+/* 말하는 동안 입 모양(립싱크) 펄스: TTS가 단어 경계 이벤트를 주지 않는 플랫폼에서도 동작하도록 타이머로 구동 */
+function setSpeaking(on){speaking=!!on;if(av){av.speak(on);if(on)av.listen(false)}clearInterval(pulseIv);if(on)pulseIv=setInterval(()=>{if(av)av.pulse=1},430)}
+const handlers={
+  speak:m=>setSpeaking(m.on),
+  pulse:()=>{if(av)av.pulse=1},
+  listen:m=>av&&av.listen(!!m.on),
+  mood:m=>av&&av.setMood(m.mood||{}),
+  emote:m=>av&&av.emote(m.name,m.dur||3.2),
+  gesture:m=>av&&av.gesture(m.name,m.dur||2.4),
+  nod:m=>av&&av.doNod(m.n||1),
+  shake:()=>av&&av.doShake(),
+  camera:m=>Object.assign(AP,m.cam||{}),
+};
+function onMsg(e){let m=e.data;if(typeof m==='string'){try{m=JSON.parse(m)}catch(_){return}}if(m&&handlers[m.type])handlers[m.type](m)}
+addEventListener('message',onMsg);document.addEventListener('message',onMsg);   // iOS / Android WebView 둘 다
+
+</script></body></html>

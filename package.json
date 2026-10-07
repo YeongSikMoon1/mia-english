@@ -1,0 +1,10 @@
+{
+  "name": "mia-english",
+  "private": true,
+  "workspaces": ["packages/*", "apps/*"],
+  "scripts": {
+    "api": "npm run start:dev -w @mia/api",
+    "app": "npm run start -w @mia/mobile",
+    "avatar": "npm run build:avatar -w @mia/mobile"
+  }
+}
